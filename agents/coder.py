@@ -1,3 +1,5 @@
+import ast
+import re
 from openai import OpenAI
 from config import get_api_base, get_model
 
@@ -5,11 +7,10 @@ from config import get_api_base, get_model
 CODER_SYSTEM_PROMPT = """You are an expert developer. Generate complete, production-quality code for a single file.
 
 Rules:
-- Write the COMPLETE file contents
-- Include imports, error handling, docstrings
-- Follow best practices and conventions for the language
-- Output ONLY the raw code, no explanations, no markdown fences
-- The code should be ready to run"""
+- Write COMPLETE, working code
+- Keep it concise - prioritize working code over length
+- Include error handling and docstrings
+- Output ONLY raw code, no explanations, no markdown"""
 
 
 def create_client():
@@ -19,22 +20,67 @@ def create_client():
     return OpenAI(api_key="dummy", base_url=api_base)
 
 
+def truncate_to_valid_python(code: str) -> str:
+    """If code is truncated mid-statement, trim to last valid line."""
+    # Try to parse as-is
+    try:
+        ast.parse(code)
+        return code
+    except SyntaxError:
+        pass
+
+    # Remove markdown code fences
+    code = re.sub(r'```[\w]*\n?', '', code).strip()
+
+    # Try again
+    try:
+        ast.parse(code)
+        return code
+    except SyntaxError:
+        pass
+
+    # Trim line by line from the end until valid
+    lines = code.split("\n")
+    # Keep trimming from end
+    for i in range(len(lines), 0, -1):
+        trimmed = "\n".join(lines[:i])
+        try:
+            ast.parse(trimmed)
+            return trimmed
+        except SyntaxError:
+            continue
+
+    # If still invalid, try removing last incomplete function/class
+    # Find last def/class and keep everything before it
+    pattern = r'\n(def |class )'
+    last_match = 0
+    for m in re.finditer(pattern, code):
+        last_match = m.start()
+
+    if last_match > 0:
+        trimmed = code[:last_match].rstrip()
+        try:
+            ast.parse(trimmed)
+            return trimmed
+        except SyntaxError:
+            pass
+
+    return code
+
+
 def generate_file(filepath: str, purpose: str, language: str, description: str, plan: str) -> str:
     """Generate a single file's code."""
     client = create_client()
 
-    prompt = f"""Generate the complete code for this file:
-
-File: {filepath}
+    prompt = f"""Generate complete code for {filepath}.
 Language: {language}
 Purpose: {purpose}
+Project: {description}
 
-Project context: {description}
+Plan:
+{plan[:600]}
 
-Plan summary:
-{plan[:800]}
-
-Output ONLY the raw code for {filepath}. No explanations, no markdown."""
+Write concise, working code. Output ONLY the code."""
 
     for attempt in range(3):
         response = client.chat.completions.create(
@@ -44,25 +90,26 @@ Output ONLY the raw code for {filepath}. No explanations, no markdown."""
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
-            max_tokens=2000,
+            max_tokens=3000,
             seed=42,
         )
         content = response.choices[0].message.content.strip()
 
-        # Strip markdown code fences if present
+        # Strip markdown fences
         if content.startswith("```"):
-            lines = content.split("\n")
-            lines = [l for l in lines if not l.startswith("```")]
-            content = "\n".join(lines).strip()
+            content = re.sub(r'```[\w]*\n?', '', content).strip()
 
         if content and len(content) > 10:
+            # Ensure valid Python for .py files
+            if filepath.endswith(".py"):
+                content = truncate_to_valid_python(content)
             return content
 
-    return content
+    return ""
 
 
 def generate_all_files(files: list[dict], description: str, plan: str) -> dict[str, str]:
-    """Generate code for all files. Returns {path: content}."""
+    """Generate code for all files."""
     result = {}
     total = len(files)
 
@@ -72,8 +119,11 @@ def generate_all_files(files: list[dict], description: str, plan: str) -> dict[s
         language = file_info.get("language", "unknown")
 
         print(f"  [{i}/{total}] Generating: {filepath}")
-
         content = generate_file(filepath, purpose, language, description, plan)
-        result[filepath] = content
+        if content:
+            result[filepath] = content
+            print(f"    OK ({len(content)} chars)")
+        else:
+            print(f"    FAILED")
 
     return result
