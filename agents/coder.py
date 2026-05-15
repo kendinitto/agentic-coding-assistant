@@ -1,29 +1,15 @@
-import re
 from openai import OpenAI
 from config import get_api_base, get_model
 
 
-CODER_SYSTEM_PROMPT = """You are an expert full-stack developer. Generate complete, production-quality code.
-
-CRITICAL OUTPUT FORMAT - follow exactly:
-
-FILE: path/to/file.ext
-[complete file contents - no markdown, no code fences, just raw code]
-
-FILE: path/to/another/file.ext
-[complete file contents]
+CODER_SYSTEM_PROMPT = """You are an expert developer. Generate complete, production-quality code for a single file.
 
 Rules:
-- Each file starts with "FILE:" followed by the path
-- Then the raw file contents immediately on the next line
-- No markdown backticks, no "code starts/ends" markers
-- No blank lines between FILE: and the code
-- Generate ALL files needed
-
-Coding standards:
-- Clean, documented, production-quality code
-- Error handling, type hints, docstrings
-- Follow language conventions"""
+- Write the COMPLETE file contents
+- Include imports, error handling, docstrings
+- Follow best practices and conventions for the language
+- Output ONLY the raw code, no explanations, no markdown fences
+- The code should be ready to run"""
 
 
 def create_client():
@@ -33,61 +19,61 @@ def create_client():
     return OpenAI(api_key="dummy", base_url=api_base)
 
 
-def code(description: str, plan: str, architecture: str) -> str:
-    """Generate complete code for all project files."""
+def generate_file(filepath: str, purpose: str, language: str, description: str, plan: str) -> str:
+    """Generate a single file's code."""
     client = create_client()
 
-    prompt = f"""Project: {description}
+    prompt = f"""Generate the complete code for this file:
 
-Plan:
-{plan}
+File: {filepath}
+Language: {language}
+Purpose: {purpose}
 
-Architecture:
-{architecture}
+Project context: {description}
 
-Generate ALL files. Each starts with "FILE: path" on its own line, then the raw contents immediately."""
+Plan summary:
+{plan[:800]}
 
-    response = client.chat.completions.create(
-        model=get_model(),
-        messages=[
-            {"role": "system", "content": CODER_SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.5,
-        max_tokens=4000,
-    )
+Output ONLY the raw code for {filepath}. No explanations, no markdown."""
 
-    return response.choices[0].message.content
+    for attempt in range(3):
+        response = client.chat.completions.create(
+            model=get_model(),
+            messages=[
+                {"role": "system", "content": CODER_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=2000,
+            seed=42,
+        )
+        content = response.choices[0].message.content.strip()
+
+        # Strip markdown code fences if present
+        if content.startswith("```"):
+            lines = content.split("\n")
+            lines = [l for l in lines if not l.startswith("```")]
+            content = "\n".join(lines).strip()
+
+        if content and len(content) > 10:
+            return content
+
+    return content
 
 
-def extract_files(code_output: str) -> dict[str, str]:
-    """Parse code output into {filepath: content} dict. Handles multiple formats."""
-    files = {}
-    lines = code_output.split("\n")
-    current_file = None
-    current_lines = []
+def generate_all_files(files: list[dict], description: str, plan: str) -> dict[str, str]:
+    """Generate code for all files. Returns {path: content}."""
+    result = {}
+    total = len(files)
 
-    skip_markers = {"<code starts here>", "<code ends here>", "```", "---"}
+    for i, file_info in enumerate(files, 1):
+        filepath = file_info["path"]
+        purpose = file_info.get("purpose", "")
+        language = file_info.get("language", "unknown")
 
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("FILE:") and not stripped.startswith("FILE:  "):
-            if current_file:
-                content = "\n".join(current_lines).strip()
-                content = re.sub(r'<code\s+(starts|ends)\s+here>\s*', '', content, flags=re.IGNORECASE)
-                content = content.strip()
-                if content:
-                    files[current_file] = content
-            current_file = stripped[5:].strip()
-            current_lines = []
-        elif current_file is not None:
-            current_lines.append(line)
+        print(f"  [{i}/{total}] Generating: {filepath}")
 
-    if current_file:
-        content = "\n".join(current_lines).strip()
-        content = re.sub(r'<code\s+(starts|ends)\s+here>\s*', '', content, flags=re.IGNORECASE)
-        content = content.strip()
-        if content:
-            files[current_file] = content
+        content = generate_file(filepath, purpose, language, description, plan)
+        result[filepath] = content
 
-    return files
+    return result

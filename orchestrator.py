@@ -13,8 +13,7 @@ class AgentState(TypedDict):
     description: str
     tech_stack: str
     plan: str
-    architecture: str
-    raw_code: str
+    file_list: list
     files: dict
     review: str
     phase: str
@@ -26,30 +25,32 @@ def plan_node(state: AgentState) -> AgentState:
         "[bold cyan]PLANNER AGENT[/bold cyan]\nBreaking down requirements...",
         border_style="cyan"
     ))
-    plan_result = planner.plan(state["description"], state["tech_stack"])
+    plan = planner.plan(state["description"], state["tech_stack"])
     console.print("[green]Planning complete.[/green]")
-    return {**state, "plan": plan_result, "phase": "planned", "iterations": state["iterations"] + 1}
+    return {**state, "plan": plan, "phase": "planned", "iterations": state["iterations"] + 1}
 
 
 def architecture_node(state: AgentState) -> AgentState:
     console.print(Panel(
-        "[bold blue]ARCHITECT AGENT[/bold blue]\nDesigning system architecture...",
+        "[bold blue]ARCHITECT AGENT[/bold blue]\nDesigning file structure...",
         border_style="blue"
     ))
-    arch_result = architect.architect(state["description"], state["plan"])
-    console.print("[green]Architecture complete.[/green]")
-    return {**state, "architecture": arch_result, "phase": "architectured", "iterations": state["iterations"] + 1}
+    file_list = architect.architect(state["description"], state["plan"])
+    console.print(f"[green]Designed {len(file_list)} files.[/green]")
+    return {**state, "file_list": file_list, "phase": "architectured", "iterations": state["iterations"] + 1}
 
 
 def code_node(state: AgentState) -> AgentState:
     console.print(Panel(
-        "[bold green]CODER AGENT[/bold green]\nGenerating production code...",
+        "[bold green]CODER AGENT[/bold green]\nGenerating code for each file...",
         border_style="green"
     ))
-    code_result = coder.code(state["description"], state["plan"], state["architecture"])
-    files = coder.extract_files(code_result)
-    console.print(f"[green]Generated {len(files)} files.[/green]")
-    return {**state, "raw_code": code_result, "files": files, "phase": "coded", "iterations": state["iterations"] + 1}
+    files = coder.generate_all_files(
+        state["file_list"], state["description"], state["plan"]
+    )
+    generated = sum(1 for c in files.values() if len(c) > 10)
+    console.print(f"[green]Generated {generated}/{len(files)} files successfully.[/green]")
+    return {**state, "files": files, "phase": "coded", "iterations": state["iterations"] + 1}
 
 
 def review_node(state: AgentState) -> AgentState:
@@ -57,7 +58,7 @@ def review_node(state: AgentState) -> AgentState:
         "[bold magenta]REVIEWER AGENT[/bold magenta]\nReviewing code quality...",
         border_style="magenta"
     ))
-    review_result = reviewer.review(state["description"], state["plan"], state["files"])
+    review_result = reviewer.review(state["description"], state["files"])
     console.print("[green]Review complete.[/green]")
     return {**state, "review": review_result, "phase": "reviewed", "iterations": state["iterations"] + 1}
 
@@ -82,7 +83,6 @@ def save_project(state: AgentState, project_name: str) -> str:
 
 
 def build_pipeline() -> StateGraph:
-    """Build the multi-agent coding pipeline."""
     workflow = StateGraph(AgentState)
     workflow.add_node("planner", plan_node)
     workflow.add_node("architect", architecture_node)
@@ -97,7 +97,6 @@ def build_pipeline() -> StateGraph:
 
 
 def run_pipeline(description: str, tech_stack: str = "", save_files: bool = True) -> AgentState:
-    """Execute the full agentic coding pipeline."""
     console.print(Panel(
         f"[bold]Agentic Coding Assistant[/bold]\n\n"
         f"Request: {description}\n"
@@ -114,8 +113,7 @@ def run_pipeline(description: str, tech_stack: str = "", save_files: bool = True
         "description": description,
         "tech_stack": tech_stack,
         "plan": "",
-        "architecture": "",
-        "raw_code": "",
+        "file_list": [],
         "files": {},
         "review": "",
         "phase": "init",
@@ -127,15 +125,17 @@ def run_pipeline(description: str, tech_stack: str = "", save_files: bool = True
         TextColumn("[progress.description]{task.description}"),
         console=console,
     ) as progress:
-        task = progress.add_task("Agents working...", total=None)
+        task = progress.add_task("Running pipeline...", total=None)
         result = app.invoke(initial_state)
         progress.update(task, completed=True)
 
     if save_files and result["files"]:
         project_dir = save_project(result, description[:40])
-        console.print(f"\n[bold green]Project saved to: {project_dir}[/bold green]")
+        console.print(f"\n[bold green]Project saved: {project_dir}[/bold green]")
+        console.print("\n[bold]Files:[/bold]")
+        for p in sorted(result["files"].keys()):
+            console.print(f"  {p}")
 
-    console.print(f"\n[bold green]Pipeline complete![/bold green]")
-    console.print(f"Files: {len(result['files'])} | Steps: {result['iterations']}")
+    console.print(f"\n[bold green]Done![/bold green] {len(result['files'])} files, {result['iterations']} agent steps")
 
     return result
